@@ -83,6 +83,69 @@ enum WindowAttributionService {
         return clients.sorted { ($0.name, $0.kind) < ($1.name, $1.kind) }
     }
 
+    /// Joins every running process's own RSS with the surface memory
+    /// WindowServer holds for that process, giving a real per-application
+    /// memory ranking (RSS + surface estimate).
+    static func appMemory(owners: [OwnerAttribution]) -> [AppMemoryRow] {
+        let surfaceByPID = Dictionary(uniqueKeysWithValues: owners.map { ($0.pid, $0) })
+        let result = Shell.run("/bin/ps", ["-Ao", "pid=,rss=,comm="])
+        var rows: [AppMemoryRow] = []
+
+        for raw in result.output.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            guard let space = line.firstIndex(where: { $0 == " " || $0 == "\t" }) else { continue }
+            let pidPart = line[..<space].trimmingCharacters(in: .whitespaces)
+            let rest = line[line.index(after: space)...].trimmingCharacters(in: .whitespaces)
+            guard let pid = Int(pidPart) else { continue }
+            guard let secondSpace = rest.firstIndex(where: { $0 == " " || $0 == "\t" }) else { continue }
+            let rssPart = rest[..<secondSpace].trimmingCharacters(in: .whitespaces)
+            let comm = rest[rest.index(after: secondSpace)...].trimmingCharacters(in: .whitespaces)
+            let rss = (UInt64(rssPart) ?? 0) * 1024
+            let owner = surfaceByPID[pid]
+            let surface = owner?.estimatedBytes ?? 0
+            guard rss > 0 || surface > 0 else { continue }
+            rows.append(AppMemoryRow(
+                pid: pid,
+                name: owner?.name ?? (comm as NSString).lastPathComponent,
+                groupName: applicationBundleName(from: comm),
+                residentBytes: rss,
+                surfaceBytes: surface,
+                windowCount: owner?.windowCount ?? 0
+            ))
+        }
+        return rows.sorted { $0.totalBytes > $1.totalBytes }
+    }
+
+    /// Derives the owning application from an executable path by taking the
+    /// outermost `.app` bundle, so a main process and all of its helper
+    /// processes collapse to one application name.
+    static func applicationBundleName(from path: String) -> String {
+        let components = path.split(separator: "/")
+        if let app = components.first(where: { $0.hasSuffix(".app") }) {
+            return String(app.dropLast(4))
+        }
+        return (path as NSString).lastPathComponent
+    }
+
+    static func group(_ rows: [AppMemoryRow]) -> [ApplicationMemory] {
+        var buckets: [String: ApplicationMemory] = [:]
+        for row in rows {
+            var bucket = buckets[row.groupName] ?? ApplicationMemory(
+                name: row.groupName,
+                processCount: 0,
+                residentBytes: 0,
+                surfaceBytes: 0,
+                windowCount: 0
+            )
+            bucket.processCount += 1
+            bucket.residentBytes += row.residentBytes
+            bucket.surfaceBytes += row.surfaceBytes
+            bucket.windowCount += row.windowCount
+            buckets[row.groupName] = bucket
+        }
+        return buckets.values.sorted { $0.totalBytes > $1.totalBytes }
+    }
+
     static func processNames() -> [Int: String] {
         var map: [Int: String] = [:]
         let result = Shell.run("/bin/ps", ["-Ao", "pid=,comm="])

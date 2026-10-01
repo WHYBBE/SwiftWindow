@@ -12,10 +12,13 @@ enum DiagnosisEngine {
         let stageManager = StageManagerService.state()
 
         let windowServerWindows = windows.filter(\.isWindowServer)
+        let appRows = WindowAttributionService.appMemory(owners: owners)
         return AttributionSnapshot(
             date: Date(),
             displayScale: scale,
             owners: owners,
+            appMemory: appRows,
+            applications: WindowAttributionService.group(appRows),
             windows: windows,
             surfaceClients: clients,
             stageManager: stageManager,
@@ -27,9 +30,33 @@ enum DiagnosisEngine {
 
     static func findings(snapshot: AttributionSnapshot,
                          report: DetailedReport?,
-                         samples: [SurfaceSample]) -> [DiagnosisFinding] {
+                         samples: [SurfaceSample],
+                         trends: [OwnerTrend] = [],
+                         rssBytes: UInt64 = 0) -> [DiagnosisFinding] {
         var findings: [DiagnosisFinding] = []
         let fullscreenBytes = snapshot.owners.first(where: { $0.isWindowServer })?.estimatedBytes ?? 0
+
+        if rssBytes > 0 || snapshot.windowServerSurfaceBytes > 0 {
+            findings.append(DiagnosisFinding(
+                severity: .info,
+                title: "内存口径对照：为什么 ps 看到约 \(ByteFormat.string(rssBytes))，活动监视器却显示约 \(ByteFormat.string(rssBytes + snapshot.windowServerSurfaceBytes))",
+                detail: "活动监视器显示的是进程“物理足迹”，包含 WindowServer 为各窗口分配的 GPU/IOSurface backing store；而 ps 的 RSS 只统计 CPU 侧常驻页，不含这些图面。两者差值 ≈ \(ByteFormat.string(snapshot.windowServerSurfaceBytes)) 的全屏 surface，这是正常的口径差异，不是数据缺失。",
+                suspect: nil
+            ))
+        }
+
+        if !trends.isEmpty {
+            let list = trends.prefix(8).map { trend -> String in
+                let sign = trend.surfaceGrowthBytes >= 0 ? "+" : "-"
+                return "\(trend.name)（PID \(trend.pid)）: surface \(sign)\(ByteFormat.string(UInt64(abs(trend.surfaceGrowthBytes))))，窗口 \(trend.windowGrowth >= 0 ? "+" : "")\(trend.windowGrowth)，当前 \(trend.currentWindows) 窗口 / \(ByteFormat.string(trend.currentBytes))"
+            }.joined(separator: "\n")
+            findings.append(DiagnosisFinding(
+                severity: .warning,
+                title: "增长最快的进程（疑似泄漏）",
+                detail: "对比首个与最新采样点，以下进程的窗口数或 surface 占用在持续增长，最可能是泄漏源头：\n\(list)",
+                suspect: trends.first?.name
+            ))
+        }
 
         if snapshot.windowServerFullscreenCount >= 6 {
             let stageNote = snapshot.stageManager.enabled

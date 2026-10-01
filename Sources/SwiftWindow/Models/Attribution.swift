@@ -39,6 +39,32 @@ struct IOSurfaceClient: Sendable, Identifiable, Hashable {
     var name: String
 }
 
+/// A process-level memory row: its own CPU-side resident memory plus the
+/// compositor surface memory WindowServer holds for its windows.
+struct AppMemoryRow: Sendable, Identifiable {
+    var id: Int { pid }
+    var pid: Int
+    var name: String
+    var groupName: String
+    var residentBytes: UInt64
+    var surfaceBytes: UInt64
+    var windowCount: Int
+    var totalBytes: UInt64 { residentBytes + surfaceBytes }
+}
+
+/// Several processes that belong to the same application bundle (for example
+/// the main Edge process plus all of its helper/renderer processes) merged into
+/// one row.
+struct ApplicationMemory: Sendable, Identifiable {
+    var id: String { name }
+    var name: String
+    var processCount: Int
+    var residentBytes: UInt64
+    var surfaceBytes: UInt64
+    var windowCount: Int
+    var totalBytes: UInt64 { residentBytes + surfaceBytes }
+}
+
 struct StageManagerState: Sendable {
     var enabled: Bool = false
     var managementMode: Int = 0
@@ -57,12 +83,28 @@ struct SurfaceSample: Sendable, Identifiable {
     var windowServerSurfaceBytes: UInt64
     var windowServerFullscreenCount: Int
     var totalWindowCount: Int
+    var owners: [OwnerAttribution]
+}
+
+/// Growth of one process between the first and last surface sample.
+/// Positive growth of window count / surface bytes is the practical signal of
+/// a window or surface leak.
+struct OwnerTrend: Sendable, Identifiable {
+    var id: Int { pid }
+    var pid: Int
+    var name: String
+    var windowGrowth: Int
+    var surfaceGrowthBytes: Int64
+    var currentBytes: UInt64
+    var currentWindows: Int
 }
 
 struct AttributionSnapshot: Sendable {
     var date: Date
     var displayScale: Double
     var owners: [OwnerAttribution]
+    var appMemory: [AppMemoryRow]
+    var applications: [ApplicationMemory]
     var windows: [WindowSurface]
     var surfaceClients: [IOSurfaceClient]
     var stageManager: StageManagerState

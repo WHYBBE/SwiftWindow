@@ -50,7 +50,7 @@ enum StageManagerService {
         state.distinctApps = appCounts.count
         state.topApps = appCounts
             .sorted { $0.value > $1.value }
-            .prefix(10)
+            .prefix(20)
             .map { (app: $0.key, sets: $0.value) }
         return state
     }

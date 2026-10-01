@@ -3,14 +3,18 @@ import Charts
 
 struct DiagnosisView: View {
     @EnvironmentObject private var engine: MonitorEngine
+    @State private var mergeByApp = true
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 actionBar
+                reconciliationCard
                 findingsSection
                 if let snapshot = engine.attribution {
                     stageManagerCard(snapshot)
+                    trendsSection
+                    appMemorySection(snapshot)
                     attributionSection(snapshot)
                     clientsSection(snapshot)
                     timelineSection
@@ -57,6 +61,89 @@ struct DiagnosisView: View {
         }
     }
 
+    private var reconciliationCard: some View {
+        let rss = engine.stats?.residentBytes ?? 0
+        let surfaces = engine.attribution?.windowServerSurfaceBytes ?? 0
+        let footprint = engine.estimatedFootprintBytes
+        let maxValue = Double(max(footprint, 1))
+        return VStack(alignment: .leading, spacing: 10) {
+            Text("内存口径对照").font(.headline)
+            VStack(spacing: 8) {
+                compositionRow(label: "ps RSS（CPU 侧常驻）", value: rss, max: maxValue, tint: .blue)
+                compositionRow(label: "WindowServer 全屏 Surface（GPU/IOSurface）", value: surfaces, max: maxValue, tint: .red)
+                Divider()
+                compositionRow(label: "≈ 活动监视器口径（物理足迹）", value: footprint, max: maxValue, tint: .purple)
+            }
+            Text("ps 只统计 CPU 侧常驻内存，活动监视器统计的是物理足迹，额外包含 WindowServer 代表窗口持有的 GPU/IOSurface 图面，因此两者天然存在数量级差距。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.separator, lineWidth: 0.5))
+    }
+
+    private func compositionRow(label: String, value: UInt64, max: Double, tint: Color) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(label).font(.callout)
+                Spacer()
+                Text(ByteFormat.string(value)).font(.callout.monospacedDigit())
+            }
+            RatioBar(fraction: Double(value) / max, tint: tint)
+        }
+    }
+
+    private var trendsSection: some View {
+        let trends = engine.ownerTrends
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("泄漏 / 增长追踪").font(.headline)
+                Spacer()
+                Text(engine.surfaceSamples.count >= 2 ? "基于 \(engine.surfaceSamples.count) 个采样点" : "采样不足")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if engine.surfaceSamples.count < 2 {
+                Text("开启“自动刷新”，让应用持续采样各进程的窗口数与 surface 占用，即可自动排出增长最快的进程。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else if trends.isEmpty {
+                Text("采样窗口内没有进程的窗口数或 surface 占用明显增长。")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            } else {
+                Table(trends) {
+                    TableColumn("进程") { trend in
+                        Text(trend.name).font(.callout).lineLimit(1)
+                    }
+                    .width(min: 120, ideal: 180)
+                    TableColumn("Surface 增长") { trend in
+                        Text((trend.surfaceGrowthBytes >= 0 ? "+" : "-") + ByteFormat.string(UInt64(abs(trend.surfaceGrowthBytes))))
+                            .monospacedDigit()
+                            .foregroundStyle(trend.surfaceGrowthBytes > 0 ? .red : .secondary)
+                    }
+                    .width(min: 100, ideal: 120)
+                    TableColumn("窗口增长") { trend in
+                        Text((trend.windowGrowth >= 0 ? "+" : "") + "\(trend.windowGrowth)")
+                            .monospacedDigit()
+                            .foregroundStyle(trend.windowGrowth > 0 ? .orange : .secondary)
+                    }
+                    .width(min: 70, ideal: 90)
+                    TableColumn("当前窗口") { trend in Text("\(trend.currentWindows)").monospacedDigit() }
+                        .width(min: 70, ideal: 90)
+                    TableColumn("当前占用") { trend in Text(ByteFormat.string(trend.currentBytes)).monospacedDigit() }
+                        .width(min: 90, ideal: 110)
+                }
+                .frame(height: min(240, CGFloat(trends.count) * 28 + 28))
+            }
+        }
+        .padding(14)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.separator, lineWidth: 0.5))
+    }
+
     private var findingsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("归因结论")
@@ -96,6 +183,95 @@ struct DiagnosisView: View {
                 Text("窗口集最多的应用：" + stage.topApps.map { "\($0.app)（\($0.sets)）" }.joined(separator: "、"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+        }
+        .padding(14)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.separator, lineWidth: 0.5))
+    }
+
+    private func appMemorySection(_ snapshot: AttributionSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("应用内存排行（自身 RSS + 其窗口 Surface）").font(.headline)
+                Spacer()
+                Toggle("合并同一应用", isOn: $mergeByApp)
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+                Text(mergeByApp ? "\(snapshot.applications.count) 个应用 · \(snapshot.appMemory.count) 个进程"
+                                : "\(snapshot.appMemory.count) 个进程")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if mergeByApp {
+                Table(Array(snapshot.applications.prefix(40))) {
+                    TableColumn("应用") { app in
+                        HStack(spacing: 6) {
+                            if app.surfaceBytes > 0 {
+                                Image(systemName: "rectangle.inset.filled")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            }
+                            Text(app.name).font(.callout).lineLimit(1)
+                        }
+                    }
+                    .width(min: 140, ideal: 200)
+                    TableColumn("进程数") { app in Text("\(app.processCount)").monospacedDigit() }
+                        .width(min: 60, ideal: 70)
+                    TableColumn("自身 RSS") { app in Text(ByteFormat.string(app.residentBytes)).monospacedDigit() }
+                        .width(min: 90, ideal: 110)
+                    TableColumn("窗口 Surface") { app in
+                        Text(ByteFormat.string(app.surfaceBytes))
+                            .monospacedDigit()
+                            .foregroundStyle(app.surfaceBytes > 0 ? .orange : .secondary)
+                    }
+                    .width(min: 100, ideal: 120)
+                    TableColumn("窗口数") { app in Text("\(app.windowCount)").monospacedDigit() }
+                        .width(min: 60, ideal: 80)
+                    TableColumn("合计") { app in
+                        Text(ByteFormat.string(app.totalBytes))
+                            .monospacedDigit()
+                            .fontWeight(.semibold)
+                    }
+                    .width(min: 90, ideal: 110)
+                }
+                .frame(height: min(420, CGFloat(min(snapshot.applications.count, 40)) * 28 + 28))
+            } else {
+                Table(Array(snapshot.appMemory.prefix(40))) {
+                    TableColumn("进程") { row in
+                        HStack(spacing: 6) {
+                            if row.surfaceBytes > 0 {
+                                Image(systemName: "rectangle.inset.filled")
+                                    .font(.caption2)
+                                    .foregroundStyle(.orange)
+                            }
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(row.name).font(.callout).lineLimit(1)
+                                if row.groupName != row.name {
+                                    Text(row.groupName).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                                }
+                            }
+                        }
+                    }
+                    .width(min: 160, ideal: 220)
+                    TableColumn("自身 RSS") { row in Text(ByteFormat.string(row.residentBytes)).monospacedDigit() }
+                        .width(min: 90, ideal: 110)
+                    TableColumn("窗口 Surface") { row in
+                        Text(ByteFormat.string(row.surfaceBytes))
+                            .monospacedDigit()
+                            .foregroundStyle(row.surfaceBytes > 0 ? .orange : .secondary)
+                    }
+                    .width(min: 100, ideal: 120)
+                    TableColumn("窗口数") { row in Text("\(row.windowCount)").monospacedDigit() }
+                        .width(min: 60, ideal: 80)
+                    TableColumn("合计") { row in
+                        Text(ByteFormat.string(row.totalBytes))
+                            .monospacedDigit()
+                            .fontWeight(.semibold)
+                    }
+                    .width(min: 90, ideal: 110)
+                }
+                .frame(height: min(420, CGFloat(min(snapshot.appMemory.count, 40)) * 28 + 28))
             }
         }
         .padding(14)

@@ -25,6 +25,39 @@ final class MonitorEngine: ObservableObject {
 
     var pid: Int? { stats?.pid }
 
+    /// Activity Monitor shows a task's *physical footprint*, which includes
+    /// GPU/IOSurface backing stores that never appear in `ps` RSS. We reconcile
+    /// the two views as: RSS (ps) + WindowServer surface estimate ≈ footprint.
+    var estimatedFootprintBytes: UInt64 {
+        (stats?.residentBytes ?? 0) + (attribution?.windowServerSurfaceBytes ?? 0)
+    }
+
+    /// Ranked per-process growth between the first and last collected sample.
+    var ownerTrends: [OwnerTrend] {
+        guard surfaceSamples.count >= 2,
+              let first = surfaceSamples.first,
+              let last = surfaceSamples.last,
+              !first.owners.isEmpty else { return [] }
+        let baseline = Dictionary(uniqueKeysWithValues: first.owners.map { ($0.pid, $0) })
+        var trends: [OwnerTrend] = []
+        for owner in last.owners {
+            let before = baseline[owner.pid]
+            let surfaceGrowth = Int64(owner.estimatedBytes) - Int64(before?.estimatedBytes ?? 0)
+            let windowGrowth = owner.windowCount - (before?.windowCount ?? 0)
+            if surfaceGrowth > 4 * 1024 * 1024 || windowGrowth > 1 {
+                trends.append(OwnerTrend(
+                    pid: owner.pid,
+                    name: owner.name,
+                    windowGrowth: windowGrowth,
+                    surfaceGrowthBytes: surfaceGrowth,
+                    currentBytes: owner.estimatedBytes,
+                    currentWindows: owner.windowCount
+                ))
+            }
+        }
+        return trends.sorted { $0.surfaceGrowthBytes > $1.surfaceGrowthBytes }
+    }
+
     func start() {
         refreshBasic()
     }
@@ -68,10 +101,13 @@ final class MonitorEngine: ObservableObject {
                 let clients = needsFullScan ? WindowAttributionService.scanSurfaceClients() : previousClients
                 let stage = needsFullScan ? StageManagerService.state() : previousStage
                 let windowServerWindows = windows.filter(\.isWindowServer)
+                let appRows = WindowAttributionService.appMemory(owners: owners)
                 let snapshot = AttributionSnapshot(
                     date: Date(),
                     displayScale: scale,
                     owners: owners,
+                    appMemory: appRows,
+                    applications: WindowAttributionService.group(appRows),
                     windows: windows,
                     surfaceClients: clients,
                     stageManager: stage,
@@ -93,7 +129,8 @@ final class MonitorEngine: ObservableObject {
                 totalSurfaceBytes: scan.0.totalSurfaceBytes,
                 windowServerSurfaceBytes: scan.0.windowServerSurfaceBytes,
                 windowServerFullscreenCount: scan.0.windowServerFullscreenCount,
-                totalWindowCount: scan.0.windows.count
+                totalWindowCount: scan.0.windows.count,
+                owners: scan.0.owners
             ))
             if self.surfaceSamples.count > 120 {
                 self.surfaceSamples.removeFirst(self.surfaceSamples.count - 120)
@@ -107,7 +144,9 @@ final class MonitorEngine: ObservableObject {
         findings = DiagnosisEngine.findings(
             snapshot: attribution,
             report: report,
-            samples: surfaceSamples
+            samples: surfaceSamples,
+            trends: ownerTrends,
+            rssBytes: stats?.residentBytes ?? 0
         )
     }
 
