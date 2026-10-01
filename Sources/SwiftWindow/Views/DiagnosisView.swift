@@ -6,6 +6,7 @@ struct DiagnosisView: View {
     @State private var mergeByApp = true
     @State private var surfaceSearch = ""
     @State private var surfaceFilter: SurfaceFilter = .all
+    @State private var tab: DiagnosisTab = .conclusion
 
     enum SurfaceFilter: String, CaseIterable, Identifiable {
         case all = "全部"
@@ -15,41 +16,58 @@ struct DiagnosisView: View {
         var id: String { rawValue }
     }
 
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                actionBar
-                reconciliationCard
-                findingsSection
-                if let snapshot = engine.attribution {
-                    stageManagerCard(snapshot)
-                    trendsSection
-                    appMemorySection(snapshot)
-                    attributionSection(snapshot)
-                    surfaceInventorySection(snapshot)
-                    clientsSection(snapshot)
-                    timelineSection
-                } else {
-                    EmptyStateView(
-                        systemImage: "stethoscope",
-                        title: "正在归因",
-                        message: "正在扫描 WindowServer 窗口与 GPU 客户端…"
-                    )
-                    .frame(height: 200)
-                }
-                leaksSection
+    enum DiagnosisTab: String, CaseIterable, Identifiable {
+        case conclusion = "结论"
+        case attribution = "归因"
+        case surface = "图面"
+        case trend = "趋势与泄漏"
+        var id: String { rawValue }
+
+        var systemImage: String {
+            switch self {
+            case .conclusion: return "text.magnifyingglass"
+            case .attribution: return "target"
+            case .surface: return "rectangle.on.rectangle"
+            case .trend: return "chart.line.uptrend.xyaxis"
             }
-            .padding(16)
         }
     }
 
-    private var actionBar: some View {
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            currentTab
+        }
+    }
+
+    private var header: some View {
         HStack(spacing: 10) {
+            Picker("", selection: $tab) {
+                ForEach(DiagnosisTab.allCases) { item in
+                    Label(item.rawValue, systemImage: item.systemImage).tag(item)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 480)
+
+            Spacer()
+
+            if let snapshot = engine.attribution {
+                Text("扫描于 \(snapshot.date.formatted(date: .omitted, time: .standard)) · 缩放 \(String(format: "%.0fx", snapshot.displayScale))")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+
             Button {
                 engine.refreshAttribution(force: true)
             } label: {
                 Label("重新归因扫描", systemImage: "arrow.triangle.2.circlepath")
             }
+            .controlSize(.small)
+
             Button {
                 engine.runLeakScan()
             } label: {
@@ -62,14 +80,80 @@ struct DiagnosisView: View {
                     Label("深度泄漏扫描 (leaks)", systemImage: "ant")
                 }
             }
+            .controlSize(.small)
             .disabled(engine.isPrivilegedBusy)
-            Spacer()
-            if let snapshot = engine.attribution {
-                Text("扫描于 \(snapshot.date.formatted(date: .omitted, time: .standard)) · 缩放 \(String(format: "%.0fx", snapshot.displayScale))")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private var currentTab: some View {
+        switch tab {
+        case .conclusion: conclusionTab
+        case .attribution: attributionTab
+        case .surface: surfaceTab
+        case .trend: trendTab
+        }
+    }
+
+    private var conclusionTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                findingsSection
+            }
+            .padding(16)
+        }
+    }
+
+    private var attributionTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                reconciliationCard
+                if let snapshot = engine.attribution {
+                    stageManagerCard(snapshot)
+                    appMemorySection(snapshot)
+                    attributionSection(snapshot)
+                } else {
+                    pendingState
+                }
+            }
+            .padding(16)
+        }
+    }
+
+    private var surfaceTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                if let snapshot = engine.attribution {
+                    surfaceInventorySection(snapshot)
+                    clientsSection(snapshot)
+                } else {
+                    pendingState
+                }
+            }
+            .padding(16)
+        }
+    }
+
+    private var trendTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                trendsSection
+                if engine.attribution != nil { timelineSection }
+                leaksSection
+            }
+            .padding(16)
+        }
+    }
+
+    private var pendingState: some View {
+        EmptyStateView(
+            systemImage: "stethoscope",
+            title: "正在归因",
+            message: "正在扫描 WindowServer 窗口与 GPU 客户端…"
+        )
+        .frame(height: 200)
     }
 
     private var reconciliationCard: some View {
