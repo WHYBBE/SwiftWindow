@@ -1,6 +1,7 @@
 import SwiftUI
 
 enum AnalysisSection: String, CaseIterable, Identifiable {
+    case diagnosis = "归因诊断"
     case overview = "概览"
     case regions = "内存区域"
     case zones = "Malloc Zone"
@@ -12,7 +13,7 @@ enum AnalysisSection: String, CaseIterable, Identifiable {
 
 struct ContentView: View {
     @EnvironmentObject private var engine: MonitorEngine
-    @State private var section: AnalysisSection = .overview
+    @State private var section: AnalysisSection = .diagnosis
 
     var body: some View {
         VStack(spacing: 0) {
@@ -177,6 +178,7 @@ struct ContentView: View {
     @ViewBuilder
     private var content: some View {
         switch section {
+        case .diagnosis: DiagnosisView()
         case .overview: OverviewView()
         case .regions: RegionsView()
         case .zones: ZonesView()
