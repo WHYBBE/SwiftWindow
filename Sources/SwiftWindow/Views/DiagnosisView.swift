@@ -334,6 +334,15 @@ struct DiagnosisView: View {
                         }
                         Text(w.ownerName).font(.callout).lineLimit(1)
                         Text("PID \(w.ownerPID)").font(.caption2.monospaced()).foregroundStyle(.tertiary)
+                        if w.isServerOwned {
+                            Text("服务端")
+                                .font(.caption2.bold())
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 0.5)
+                                .background(.red.opacity(0.15), in: Capsule())
+                                .foregroundStyle(.red)
+                                .help("私有 API: owner connection = 0，即没有任何客户端进程持有它，是 WindowServer 内部图面")
+                        }
                     }
                 }
                 .width(min: 150, ideal: 190)
@@ -352,15 +361,19 @@ struct DiagnosisView: View {
                 }
                 .width(min: 80, ideal: 100)
                 TableColumn("图层") { w in
-                    Text("\(w.layer)").font(.caption.monospaced()).foregroundStyle(.secondary)
+                    Text(w.layerLabel)
+                        .font(.caption)
+                        .foregroundStyle((w.layer > 2_000_000_000 || w.layer < -2_000_000_000) ? Color.orange : Color.secondary)
+                        .help("原始值：\(w.layer)")
                 }
-                .width(min: 70, ideal: 90)
-                TableColumn("图面数") { w in
+                .width(min: 130, ideal: 160)
+                TableColumn("图面数（私有）") { w in
                     Text(w.surfaceCount >= 0 ? "\(w.surfaceCount)" : "—")
                         .font(.caption.monospaced())
                         .foregroundStyle(w.surfaceCount > 1 ? .orange : .secondary)
+                        .help(w.surfaceCount >= 0 ? "私有 SkyLight API 报告的客户端图面数（服务端内部图面恒为 0）" : "私有 API 未返回该窗口的图面数（未知）")
                 }
-                .width(min: 50, ideal: 60)
+                .width(min: 80, ideal: 90)
                 TableColumn("状态") { w in
                     Text(w.onscreen ? "屏上" : "离屏")
                         .font(.caption)
@@ -377,7 +390,7 @@ struct DiagnosisView: View {
             }
             .frame(height: min(460, CGFloat(min(windows.count, 60)) * 28 + 28))
             Text(snapshot.surfaceSource == "private"
-                 ? "说明：图面数来自私有 SkyLight API（每个窗口的 backing surface 数量）。字节数仍按窗口几何 × 显示器缩放估算——该 API 读取其他进程图面尺寸的函数会被拒绝并破坏内存，已弃用。非窗口 IOSurface 可用“详细分析（需授权）”从 vmmap 区域类型查看。"
+                 ? "说明：图面数与「服务端」标记来自私有 SkyLight API；owner connection=0 表示无客户端持有（WindowServer 内部图面，其图面数恒为 0）。字节数仍按窗口几何 × 显示器缩放估算——该 API 读取其他进程图面尺寸的函数会被拒绝并破坏内存，已弃用。非窗口 IOSurface 可用“详细分析（需授权）”从 vmmap 区域类型查看。"
                  : "说明：当前系统上私有 SkyLight API 不可用，回退为按窗口几何 × 显示器缩放估算。非窗口 IOSurface 可用“详细分析（需授权）”从 vmmap 区域类型查看其总量。")
                 .font(.caption)
                 .foregroundStyle(.tertiary)

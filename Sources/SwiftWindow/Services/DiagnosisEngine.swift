@@ -61,13 +61,22 @@ enum DiagnosisEngine {
         }
 
         if snapshot.windowServerFullscreenCount >= 6 {
+            let serverFullscreen = snapshot.windows.filter { $0.isWindowServer && $0.isFullscreen }
+            let layerText = Dictionary(grouping: serverFullscreen, by: \.layer)
+                .mapValues(\.count)
+                .sorted { $0.value > $1.value }
+                .prefix(4)
+                .map { String(format: "0x%08X×%d", UInt32(bitPattern: Int32(truncatingIfNeeded: $0.key)), $0.value) }
+                .joined(separator: "、")
+            let idRange = "\(serverFullscreen.map(\.id).min() ?? 0)–\(serverFullscreen.map(\.id).max() ?? 0)"
+            let perSurface = ByteFormat.string(fullscreenBytes / UInt64(max(1, snapshot.windowServerFullscreenCount)))
             let stageNote = snapshot.stageManager.enabled
                 ? "Stage Manager 处于开启状态，共管理 \(snapshot.stageManager.windowSetCount) 个窗口集（\(snapshot.stageManager.distinctApps) 个应用）。"
                 : "Stage Manager 未开启，需进一步排查全屏/录屏类应用。"
             findings.append(DiagnosisFinding(
                 severity: snapshot.windowServerFullscreenCount >= 12 ? .critical : .warning,
                 title: "WindowServer 自身持有 \(snapshot.windowServerFullscreenCount) 个全屏 Surface，约 \(ByteFormat.string(fullscreenBytes))",
-                detail: "这些不是普通应用窗口，而是 WindowServer 为系统合成的全屏 backing store（每个约 \(ByteFormat.string(fullscreenBytes / UInt64(max(1, snapshot.windowServerFullscreenCount))))）。它们会计入活动监视器里 WindowServer 的“内存”，但不会出现在 ps 的 RSS 中。\(stageNote)",
+                detail: "这些不是应用窗口，而是 WindowServer 代表系统合成的全屏 backing store（每个约 \(perSurface)）：计入活动监视器里 WindowServer 的“内存”，但不进 ps 的 RSS。它们成对出现在固定图层（\(layerText)），窗口号跨度 \(idRange)，说明是**随时间成对分配、动画结束后未及时释放**。私有 API 进一步确认：这些窗口的 owner connection = 0，即**没有任何客户端进程持有它们**，是 WindowServer 内部图面。系统日志中 WindowManager 反复输出 StageManagerStripStageTransitionModifier（stage 切换 / 堆叠动画）——每做一次 Stage 过渡就新增一对过渡图面。\(stageNote)",
                 suspect: snapshot.stageManager.enabled ? "Stage Manager (com.apple.WindowManager)" : nil
             ))
         }

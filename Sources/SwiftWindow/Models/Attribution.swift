@@ -22,6 +22,11 @@ struct WindowSurface: Sendable, Identifiable {
     /// Number of backing surfaces reported by the private SkyLight API, or -1
     /// when unknown.
     var surfaceCount: Int = -1
+    /// Owning SkyLight connection reported by the private API, or -1 when
+    /// unknown. 0 means the window is server-owned (no client connection).
+    var ownerConnection: Int = -1
+
+    var isServerOwned: Bool { ownerConnection == 0 }
 
     var isFullscreen: Bool { width >= 1800 && height >= 1000 }
     var isWindowServer: Bool { ownerName == "Window Server" || ownerName == "WindowServer" }
@@ -30,6 +35,27 @@ struct WindowSurface: Sendable, Identifiable {
         if isFullscreen { return isWindowServer ? "系统全屏图面" : "全屏窗口" }
         if width <= 1 || height <= 1 { return "占位/隐藏" }
         return "普通窗口"
+    }
+
+    /// Human-readable window level. The values near the 32-bit extremes are
+    /// private WindowServer levels used for system compositor/transition
+    /// surfaces (they are exactly what the OS reports, not a parsing error).
+    var layerLabel: String {
+        switch layer {
+        case 0: return "普通 (0)"
+        case 3: return "浮动 (3)"
+        case 8: return "模态 (8)"
+        case 24: return "菜单栏 (24)"
+        case 25: return "状态栏 (25)"
+        case 1000: return "屏保 (1000)"
+        case -2147483623: return "桌面 (0x80000019)"
+        case 2147483646: return "系统过渡 (0x7FFFFFFE)"
+        case -2147483626: return "系统过渡 (0x80000016)"
+        default:
+            return (layer > 2_000_000_000 || layer < -2_000_000_000)
+                ? String(format: "系统私有 (0x%08X)", UInt32(bitPattern: Int32(truncatingIfNeeded: layer)))
+                : "\(layer)"
+        }
     }
 }
 

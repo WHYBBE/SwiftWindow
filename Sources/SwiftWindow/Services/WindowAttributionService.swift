@@ -39,21 +39,27 @@ enum WindowAttributionService {
 
     // MARK: - Private surface API (best effort)
 
+    struct SurfaceProbeEntry: Sendable {
+        var surfaceCount: Int
+        var ownerConnection: Int
+    }
+
     private static let probeLock = NSLock()
     private static var probeAttempted = false
-    private static var probeCounts: [Int: Int]?
+    private static var probeEntries: [Int: SurfaceProbeEntry]?
 
-    /// Window → backing-surface *count* from the private SkyLight API, or nil
-    /// when that API is unavailable. The probe runs in a child process (see
-    /// `SurfaceProbe`); it deliberately avoids the surface Bounds/Resolution
-    /// calls, which reject foreign surfaces and corrupt memory on macOS 27.
-    static func privateSurfaceCounts() -> [Int: Int]? {
+    /// Window → {surface count, owner connection} from the private SkyLight API,
+    /// or nil when that API is unavailable. The probe runs in a child process
+    /// (see `SurfaceProbe`); it deliberately avoids the surface
+    /// Bounds/Resolution/FrontBuffer calls, which reject foreign surfaces and
+    /// corrupt memory on macOS 27.
+    static func privateSurfaceInfo() -> [Int: SurfaceProbeEntry]? {
         probeLock.lock()
         defer { probeLock.unlock() }
-        if probeAttempted { return probeCounts }
+        if probeAttempted { return probeEntries }
         probeAttempted = true
-        probeCounts = runPrivateSurfaceProbe()
-        return probeCounts
+        probeEntries = runPrivateSurfaceProbe()
+        return probeEntries
     }
 
     private static let probeUnavailableKey = "SWIFTWINDOW.surfaceProbeUnavailableOSVersion"
@@ -63,12 +69,12 @@ enum WindowAttributionService {
     static func retryPrivateProbe() {
         probeLock.lock()
         probeAttempted = false
-        probeCounts = nil
+        probeEntries = nil
         probeLock.unlock()
         UserDefaults.standard.removeObject(forKey: probeUnavailableKey)
     }
 
-    private static func runPrivateSurfaceProbe() -> [Int: Int]? {
+    private static func runPrivateSurfaceProbe() -> [Int: SurfaceProbeEntry]? {
         // Never recurse: the probe child gets this variable and will not itself
         // try to spawn another probe.
         guard ProcessInfo.processInfo.environment["SWIFTWINDOW_SURFACE_PROBE"] == nil else { return nil }
@@ -92,15 +98,16 @@ enum WindowAttributionService {
             return nil
         }
 
-        var counts: [Int: Int] = [:]
+        var entries: [Int: SurfaceProbeEntry] = [:]
         for line in result.output.split(separator: "\n") {
             let columns = line.split(separator: "\t").map(String.init)
-            guard columns.count >= 2,
+            guard columns.count >= 3,
                   let windowID = Int(columns[0]),
-                  let surfaceCount = Int(columns[1]) else { continue }
-            counts[windowID] = surfaceCount
+                  let surfaceCount = Int(columns[1]),
+                  let owner = Int(columns[2]) else { continue }
+            entries[windowID] = SurfaceProbeEntry(surfaceCount: surfaceCount, ownerConnection: owner)
         }
-        return counts.isEmpty ? nil : counts
+        return entries.isEmpty ? nil : entries
     }
 
     /// Enumerates every window known to WindowServer, estimates the backing
@@ -118,8 +125,8 @@ enum WindowAttributionService {
             scale: displayScale(),
             name: NSScreen.main?.localizedName ?? "Main"
         )
-        let surfaceCountMap = privateSurfaceCounts()
-        let source = surfaceCountMap != nil ? "private" : "geometry"
+        let surfaceInfo = privateSurfaceInfo()
+        let source = surfaceInfo != nil ? "private" : "geometry"
 
         var result: [WindowSurface] = []
         result.reserveCapacity(infoList.count)
@@ -150,7 +157,8 @@ enum WindowAttributionService {
                 scale: display.scale,
                 screenName: display.name,
                 exact: false,
-                surfaceCount: surfaceCountMap?[windowID] ?? -1
+                surfaceCount: surfaceInfo?[windowID]?.surfaceCount ?? -1,
+                ownerConnection: surfaceInfo?[windowID]?.ownerConnection ?? -1
             ))
         }
         return (result.sorted { $0.estimatedBytes > $1.estimatedBytes }, source)

@@ -26,6 +26,7 @@ import Darwin
 enum SurfaceProbe {
     private typealias MainConnectionFn = @convention(c) () -> Int32
     private typealias GetSurfaceCountFn = @convention(c) (Int32, Int32, UnsafeMutablePointer<Int>?) -> Int32
+    private typealias GetWindowOwnerFn = @convention(c) (Int32, Int32, UnsafeMutablePointer<Int32>?) -> Int32
 
     private static func symbol<T>(_ name: String, _ type: T.Type) -> T? {
         // RTLD_DEFAULT: search all already-loaded images (SkyLight is loaded by
@@ -61,7 +62,8 @@ enum SurfaceProbe {
     /// API can abort the process, which is why this runs in its own process.
     private static func enumerateAndPrint() {
         guard let mainConnection = symbol("SLSMainConnectionID", MainConnectionFn.self),
-              let getSurfaceCount = symbol("SLSGetSurfaceCount", GetSurfaceCountFn.self) else {
+              let getSurfaceCount = symbol("SLSGetSurfaceCount", GetSurfaceCountFn.self),
+              let getWindowOwner = symbol("SLSGetWindowOwner", GetWindowOwnerFn.self) else {
             FileHandle.standardError.write(Data("private surface symbols unavailable\n".utf8))
             exit(2)
         }
@@ -72,16 +74,18 @@ enum SurfaceProbe {
             return
         }
 
-        // `SLSGetSurfaceCount` is the only surface call that was reliable across
-        // every test; `SLSGetSurfaceList` crashed intermittently and the
-        // Bounds/Resolution calls corrupt memory, so none of those are used.
+        // `SLSGetSurfaceCount` + `SLSGetWindowOwner` were the only surface/window
+        // calls that stayed reliable across every test. `SLSGetSurfaceList`
+        // crashed intermittently and the Bounds/Resolution/FrontBuffer calls
+        // either corrupt memory or reject foreign surfaces, so none of those are
+        // used. Owner connection 0 means the window is server-owned (no client).
         for info in infoList {
             guard let windowID = info["kCGWindowNumber"] as? Int else { continue }
             var surfaceCount = 0
-            guard getSurfaceCount(connection, Int32(windowID), &surfaceCount) == 0, surfaceCount > 0 else {
-                continue
-            }
-            print("\(windowID)\t\(surfaceCount)")
+            _ = getSurfaceCount(connection, Int32(windowID), &surfaceCount)
+            var owner: Int32 = -1
+            _ = getWindowOwner(connection, Int32(windowID), &owner)
+            print("\(windowID)\t\(surfaceCount)\t\(owner)")
         }
     }
 }
