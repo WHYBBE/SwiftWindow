@@ -2,19 +2,125 @@ import Foundation
 import CoreGraphics
 import AppKit
 
+struct DisplayInfo: Sendable {
+    var frame: CGRect
+    var scale: Double
+    var name: String
+}
+
 enum WindowAttributionService {
     static func displayScale() -> Double {
         Double(NSScreen.main?.backingScaleFactor ?? 2.0)
     }
 
-    /// Enumerates every window known to WindowServer and estimates the backing
-    /// store it must keep. `kCGWindowMemoryUsage` is unreliable on current
-    /// macOS (it returns a constant), so we estimate from the window geometry:
-    /// bytes ≈ width × height × scale² × 4 (BGRA).
-    static func scanWindows(scale: Double) -> [WindowSurface] {
-        guard let infoList = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
-            return []
+    /// All displays in the CoreGraphics global coordinate space (origin at the
+    /// primary display's top-left, y down) together with their backing scale.
+    /// This lets each window be measured at the scale of the display it is on,
+    /// instead of assuming the main display everywhere.
+    static func displays() -> [DisplayInfo] {
+        let screens = NSScreen.screens
+        guard let primary = screens.first else { return [] }
+        let primaryHeight = primary.frame.height
+        return screens.map { screen in
+            let f = screen.frame
+            let cgFrame = CGRect(
+                x: f.origin.x,
+                y: primaryHeight - f.origin.y - f.height,
+                width: f.width,
+                height: f.height
+            )
+            return DisplayInfo(frame: cgFrame, scale: Double(screen.backingScaleFactor), name: screen.localizedName)
         }
+    }
+
+    private static func display(at point: CGPoint, in displays: [DisplayInfo], fallback: DisplayInfo) -> DisplayInfo {
+        displays.first { $0.frame.contains(point) } ?? fallback
+    }
+
+    // MARK: - Private surface API (best effort)
+
+    private static let probeLock = NSLock()
+    private static var probeAttempted = false
+    private static var probeCounts: [Int: Int]?
+
+    /// Window → backing-surface *count* from the private SkyLight API, or nil
+    /// when that API is unavailable. The probe runs in a child process (see
+    /// `SurfaceProbe`); it deliberately avoids the surface Bounds/Resolution
+    /// calls, which reject foreign surfaces and corrupt memory on macOS 27.
+    static func privateSurfaceCounts() -> [Int: Int]? {
+        probeLock.lock()
+        defer { probeLock.unlock() }
+        if probeAttempted { return probeCounts }
+        probeAttempted = true
+        probeCounts = runPrivateSurfaceProbe()
+        return probeCounts
+    }
+
+    private static let probeUnavailableKey = "SWIFTWINDOW.surfaceProbeUnavailableOSVersion"
+
+    /// Lets the app try the private surface API again (e.g. after a system
+    /// update made it available).
+    static func retryPrivateProbe() {
+        probeLock.lock()
+        probeAttempted = false
+        probeCounts = nil
+        probeLock.unlock()
+        UserDefaults.standard.removeObject(forKey: probeUnavailableKey)
+    }
+
+    private static func runPrivateSurfaceProbe() -> [Int: Int]? {
+        // Never recurse: the probe child gets this variable and will not itself
+        // try to spawn another probe.
+        guard ProcessInfo.processInfo.environment["SWIFTWINDOW_SURFACE_PROBE"] == nil else { return nil }
+
+        // Calling the private API aborts the process on some macOS versions, so
+        // remember "unavailable" for this OS version and stop retrying (this
+        // also avoids generating a crash report on every launch).
+        let osVersion = ProcessInfo.processInfo.operatingSystemVersionString
+        if UserDefaults.standard.string(forKey: probeUnavailableKey) == osVersion { return nil }
+
+        let executable = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
+        // Relaunch ourselves with the probe flag; a crash just means "unavailable".
+        let result = Shell.run(
+            executable.path,
+            ["--surface-probe"],
+            timeout: 15,
+            environment: ["SWIFTWINDOW_SURFACE_PROBE": "1"]
+        )
+        guard result.status == 0 else {
+            UserDefaults.standard.set(osVersion, forKey: probeUnavailableKey)
+            return nil
+        }
+
+        var counts: [Int: Int] = [:]
+        for line in result.output.split(separator: "\n") {
+            let columns = line.split(separator: "\t").map(String.init)
+            guard columns.count >= 2,
+                  let windowID = Int(columns[0]),
+                  let surfaceCount = Int(columns[1]) else { continue }
+            counts[windowID] = surfaceCount
+        }
+        return counts.isEmpty ? nil : counts
+    }
+
+    /// Enumerates every window known to WindowServer, estimates the backing
+    /// store it must keep (`width × height × scale² × 4`, BGRA, using the
+    /// backing scale of the display each window sits on — `kCGWindowMemoryUsage`
+    /// is unreliable on current macOS), and annotates each window with its
+    /// backing-surface count from the private SkyLight API when available.
+    static func scanSurfaceReport() -> (windows: [WindowSurface], source: String) {
+        guard let infoList = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] else {
+            return ([], "none")
+        }
+        let displays = displays()
+        let fallback = displays.first ?? DisplayInfo(
+            frame: CGRect(x: 0, y: 0, width: 1920, height: 1080),
+            scale: displayScale(),
+            name: NSScreen.main?.localizedName ?? "Main"
+        )
+        let surfaceCountMap = privateSurfaceCounts()
+        let source = surfaceCountMap != nil ? "private" : "geometry"
+
         var result: [WindowSurface] = []
         result.reserveCapacity(infoList.count)
 
@@ -22,10 +128,15 @@ enum WindowAttributionService {
             let bounds = info["kCGWindowBounds"] as? [String: Any] ?? [:]
             let width = bounds["Width"] as? Double ?? 0
             let height = bounds["Height"] as? Double ?? 0
-            let bytes = UInt64(max(0, width * height * scale * scale * 4.0))
+            let x = bounds["X"] as? Double ?? 0
+            let y = bounds["Y"] as? Double ?? 0
+            let center = CGPoint(x: x + width / 2, y: y + height / 2)
+            let display = display(at: center, in: displays, fallback: fallback)
+            let windowID = info["kCGWindowNumber"] as? Int ?? -1
+            let geometryBytes = UInt64(max(0, width * height * display.scale * display.scale * 4.0))
 
             result.append(WindowSurface(
-                id: info["kCGWindowNumber"] as? Int ?? -1,
+                id: windowID,
                 ownerPID: info["kCGWindowOwnerPID"] as? Int ?? -1,
                 ownerName: info["kCGWindowOwnerName"] as? String ?? "?",
                 windowName: info["kCGWindowName"] as? String ?? "",
@@ -35,10 +146,18 @@ enum WindowAttributionService {
                 storeType: info["kCGWindowStoreType"] as? Int ?? -1,
                 sharingState: info["kCGWindowSharingState"] as? Int ?? -1,
                 onscreen: info["kCGWindowIsOnscreen"] as? Bool ?? false,
-                estimatedBytes: bytes
+                estimatedBytes: geometryBytes,
+                scale: display.scale,
+                screenName: display.name,
+                exact: false,
+                surfaceCount: surfaceCountMap?[windowID] ?? -1
             ))
         }
-        return result.sorted { $0.estimatedBytes > $1.estimatedBytes }
+        return (result.sorted { $0.estimatedBytes > $1.estimatedBytes }, source)
+    }
+
+    static func scanWindows() -> [WindowSurface] {
+        scanSurfaceReport().windows
     }
 
     static func attribute(_ windows: [WindowSurface]) -> [OwnerAttribution] {

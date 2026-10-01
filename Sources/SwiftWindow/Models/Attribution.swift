@@ -14,9 +14,23 @@ struct WindowSurface: Sendable, Identifiable {
     var sharingState: Int
     var onscreen: Bool
     var estimatedBytes: UInt64
+    var scale: Double = 1
+    var screenName: String = ""
+    /// True when the byte count came from the private surface API instead of a
+    /// geometry estimate.
+    var exact: Bool = false
+    /// Number of backing surfaces reported by the private SkyLight API, or -1
+    /// when unknown.
+    var surfaceCount: Int = -1
 
     var isFullscreen: Bool { width >= 1800 && height >= 1000 }
     var isWindowServer: Bool { ownerName == "Window Server" || ownerName == "WindowServer" }
+
+    var kind: String {
+        if isFullscreen { return isWindowServer ? "系统全屏图面" : "全屏窗口" }
+        if width <= 1 || height <= 1 { return "占位/隐藏" }
+        return "普通窗口"
+    }
 }
 
 /// Aggregated surface attribution for one owning process.
@@ -111,6 +125,9 @@ struct AttributionSnapshot: Sendable {
     var totalSurfaceBytes: UInt64
     var windowServerSurfaceBytes: UInt64
     var windowServerFullscreenCount: Int
+    /// "private" when the private SkyLight surface API worked, otherwise
+    /// "geometry" for the fallback estimate.
+    var surfaceSource: String = "geometry"
 }
 
 enum FindingSeverity: Int, Sendable, Comparable {

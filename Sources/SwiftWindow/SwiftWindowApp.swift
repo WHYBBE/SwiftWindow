@@ -23,7 +23,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-@main
 struct SwiftWindowApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var engine = MonitorEngine()

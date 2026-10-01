@@ -4,10 +4,14 @@ enum Shell {
     @discardableResult
     static func run(_ executable: String,
                     _ arguments: [String],
-                    timeout: TimeInterval = 20) -> (output: String, status: Int32) {
+                    timeout: TimeInterval = 20,
+                    environment: [String: String]? = nil) -> (output: String, status: Int32) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        if let environment {
+            process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
+        }
 
         let pipe = Pipe()
         process.standardOutput = pipe

@@ -101,7 +101,8 @@ final class MonitorEngine: ObservableObject {
             guard let self else { return }
             let scan = await Task.detached(priority: .utility) { () -> (AttributionSnapshot, [IOSurfaceClient], StageManagerState) in
                 let scale = WindowAttributionService.displayScale()
-                let windows = WindowAttributionService.scanWindows(scale: scale)
+                let surface = WindowAttributionService.scanSurfaceReport()
+                let windows = surface.windows
                 let owners = WindowAttributionService.attribute(windows)
                 let clients = needsFullScan ? WindowAttributionService.scanSurfaceClients() : previousClients
                 let stage = needsFullScan ? StageManagerService.state() : previousStage
@@ -118,7 +119,8 @@ final class MonitorEngine: ObservableObject {
                     stageManager: stage,
                     totalSurfaceBytes: windows.reduce(0) { $0 + $1.estimatedBytes },
                     windowServerSurfaceBytes: windowServerWindows.reduce(0) { $0 + $1.estimatedBytes },
-                    windowServerFullscreenCount: windowServerWindows.filter(\.isFullscreen).count
+                    windowServerFullscreenCount: windowServerWindows.filter(\.isFullscreen).count,
+                    surfaceSource: surface.source
                 )
                 return (snapshot, clients, stage)
             }.value

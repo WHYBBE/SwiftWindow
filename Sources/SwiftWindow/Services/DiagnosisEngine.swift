@@ -6,7 +6,8 @@ enum DiagnosisEngine {
     /// Stage Manager is accumulating window sets.
     static func snapshot() -> AttributionSnapshot {
         let scale = WindowAttributionService.displayScale()
-        let windows = WindowAttributionService.scanWindows(scale: scale)
+        let surface = WindowAttributionService.scanSurfaceReport()
+        let windows = surface.windows
         let owners = WindowAttributionService.attribute(windows)
         let clients = WindowAttributionService.scanSurfaceClients()
         let stageManager = StageManagerService.state()
@@ -24,7 +25,8 @@ enum DiagnosisEngine {
             stageManager: stageManager,
             totalSurfaceBytes: windows.reduce(0) { $0 + $1.estimatedBytes },
             windowServerSurfaceBytes: windowServerWindows.reduce(0) { $0 + $1.estimatedBytes },
-            windowServerFullscreenCount: windowServerWindows.filter(\.isFullscreen).count
+            windowServerFullscreenCount: windowServerWindows.filter(\.isFullscreen).count,
+            surfaceSource: surface.source
         )
     }
 
@@ -166,6 +168,26 @@ enum DiagnosisEngine {
                     suspect: nil
                 ))
             }
+        }
+
+        var duplicateBuckets: [String: [WindowSurface]] = [:]
+        for window in snapshot.windows where window.isFullscreen {
+            duplicateBuckets["\(window.ownerName) · \(Int(window.width))×\(Int(window.height))", default: []].append(window)
+        }
+        let duplicateGroups = duplicateBuckets
+            .filter { $0.value.count >= 4 }
+            .map { (key: $0.key, count: $0.value.count, bytes: $0.value.reduce(0) { $0 + $1.estimatedBytes }, owner: $0.value.first?.ownerName ?? "") }
+            .sorted { $0.count > $1.count }
+        if !duplicateGroups.isEmpty {
+            let list = duplicateGroups.prefix(6)
+                .map { "\($0.key)：\($0.count) 个，约 \(ByteFormat.string($0.bytes))" }
+                .joined(separator: "\n")
+            findings.append(DiagnosisFinding(
+                severity: .warning,
+                title: "检测到重复的同尺寸全屏图面（累积 / 泄漏特征）",
+                detail: "同一进程持有大量尺寸完全相同的全屏图面，通常是历史资源未释放（例如 Stage Manager 窗口集、录屏/截屏缓存、每次全屏切换残留）。\n\(list)",
+                suspect: duplicateGroups.first?.owner
+            ))
         }
 
         return findings.sorted { $0.severity > $1.severity }

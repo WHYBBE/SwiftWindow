@@ -4,6 +4,16 @@ import Charts
 struct DiagnosisView: View {
     @EnvironmentObject private var engine: MonitorEngine
     @State private var mergeByApp = true
+    @State private var surfaceSearch = ""
+    @State private var surfaceFilter: SurfaceFilter = .all
+
+    enum SurfaceFilter: String, CaseIterable, Identifiable {
+        case all = "全部"
+        case windowServer = "WindowServer 自身"
+        case fullscreen = "全屏图面"
+        case large = "≥ 1 MB"
+        var id: String { rawValue }
+    }
 
     var body: some View {
         ScrollView {
@@ -16,6 +26,7 @@ struct DiagnosisView: View {
                     trendsSection
                     appMemorySection(snapshot)
                     attributionSection(snapshot)
+                    surfaceInventorySection(snapshot)
                     clientsSection(snapshot)
                     timelineSection
                 } else {
@@ -277,6 +288,123 @@ struct DiagnosisView: View {
         .padding(14)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(.separator, lineWidth: 0.5))
+    }
+
+    private func surfaceInventorySection(_ snapshot: AttributionSnapshot) -> some View {
+        let windows = filteredSurfaces(snapshot)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Surface 明细（全部窗口图面）").font(.headline)
+                Text(snapshot.surfaceSource == "private" ? "私有 API：含每窗口图面数" : "几何估算（私有 SkyLight API 不可用）")
+                    .font(.caption2.bold())
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 1)
+                    .background((snapshot.surfaceSource == "private" ? Color.green : Color.orange).opacity(0.18), in: Capsule())
+                    .foregroundStyle(snapshot.surfaceSource == "private" ? .green : .orange)
+                if snapshot.surfaceSource != "private" {
+                    Button("重试私有 API") {
+                        WindowAttributionService.retryPrivateProbe()
+                        engine.refreshAttribution(force: true)
+                    }
+                    .controlSize(.small)
+                }
+                Spacer()
+                Text("共 \(snapshot.windows.count) 个，显示 \(windows.count)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            HStack(spacing: 10) {
+                Picker("", selection: $surfaceFilter) {
+                    ForEach(SurfaceFilter.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: 420)
+                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                TextField("按进程 / 名称 / 窗口号过滤", text: $surfaceSearch)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 220)
+                Spacer()
+            }
+            Table(windows) {
+                TableColumn("归属进程") { w in
+                    HStack(spacing: 6) {
+                        if w.isWindowServer {
+                            Image(systemName: "gearshape.2.fill").font(.caption2).foregroundStyle(.red)
+                        }
+                        Text(w.ownerName).font(.callout).lineLimit(1)
+                        Text("PID \(w.ownerPID)").font(.caption2.monospaced()).foregroundStyle(.tertiary)
+                    }
+                }
+                .width(min: 150, ideal: 190)
+                TableColumn("窗口号") { w in
+                    Text("\(w.id)").font(.caption.monospaced()).foregroundStyle(.secondary)
+                }
+                .width(min: 60, ideal: 70)
+                TableColumn("类型") { w in Text(w.kind).font(.caption) }
+                    .width(min: 70, ideal: 90)
+                TableColumn("尺寸 @缩放") { w in
+                    Text("\(Int(w.width))×\(Int(w.height)) @\(Int(w.scale))x").monospacedDigit()
+                }
+                .width(min: 100, ideal: 130)
+                TableColumn("估算") { w in
+                    Text(ByteFormat.string(w.estimatedBytes)).monospacedDigit()
+                }
+                .width(min: 80, ideal: 100)
+                TableColumn("图层") { w in
+                    Text("\(w.layer)").font(.caption.monospaced()).foregroundStyle(.secondary)
+                }
+                .width(min: 70, ideal: 90)
+                TableColumn("图面数") { w in
+                    Text(w.surfaceCount >= 0 ? "\(w.surfaceCount)" : "—")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(w.surfaceCount > 1 ? .orange : .secondary)
+                }
+                .width(min: 50, ideal: 60)
+                TableColumn("状态") { w in
+                    Text(w.onscreen ? "屏上" : "离屏")
+                        .font(.caption)
+                        .foregroundStyle(w.onscreen ? .green : .secondary)
+                }
+                .width(min: 50, ideal: 60)
+                TableColumn("屏幕") { w in
+                    Text(w.screenName).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+                .width(min: 80, ideal: 120)
+                TableColumn("名称") { w in
+                    Text(w.windowName).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                }
+            }
+            .frame(height: min(460, CGFloat(min(windows.count, 60)) * 28 + 28))
+            Text(snapshot.surfaceSource == "private"
+                 ? "说明：图面数来自私有 SkyLight API（每个窗口的 backing surface 数量）。字节数仍按窗口几何 × 显示器缩放估算——该 API 读取其他进程图面尺寸的函数会被拒绝并破坏内存，已弃用。非窗口 IOSurface 可用“详细分析（需授权）”从 vmmap 区域类型查看。"
+                 : "说明：当前系统上私有 SkyLight API 不可用，回退为按窗口几何 × 显示器缩放估算。非窗口 IOSurface 可用“详细分析（需授权）”从 vmmap 区域类型查看其总量。")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(.separator, lineWidth: 0.5))
+    }
+
+    private func filteredSurfaces(_ snapshot: AttributionSnapshot) -> [WindowSurface] {
+        var list = snapshot.windows
+        switch surfaceFilter {
+        case .all: break
+        case .windowServer: list = list.filter(\.isWindowServer)
+        case .fullscreen: list = list.filter(\.isFullscreen)
+        case .large: list = list.filter { $0.estimatedBytes >= 1_048_576 }
+        }
+        if !surfaceSearch.isEmpty {
+            let needle = surfaceSearch.lowercased()
+            list = list.filter {
+                $0.ownerName.lowercased().contains(needle)
+                    || $0.windowName.lowercased().contains(needle)
+                    || String($0.id).contains(needle)
+            }
+        }
+        return list
     }
 
     private func attributionSection(_ snapshot: AttributionSnapshot) -> some View {
