@@ -47,5 +47,8 @@ cat > "${APP}/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+echo "==> Ad-hoc code signing (stable identity helps macOS cache the admin authorization)"
+codesign --force --deep --sign - "${APP}" 2>/dev/null || echo "    (codesign unavailable, skipping)"
+
 echo "==> Done: ${APP}"
 echo "    open \"${APP}\""

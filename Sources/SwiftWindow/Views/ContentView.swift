@@ -88,12 +88,12 @@ struct ContentView: View {
                         Text("分析中…")
                     }
                 } else {
-                    Label("加载详细分析", systemImage: "lock.shield")
+                    Label("详细分析（需授权）", systemImage: "lock.shield")
                 }
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
-            .disabled(engine.isLoadingDetails)
+            .disabled(engine.isPrivilegedBusy)
         }
         .padding(12)
     }

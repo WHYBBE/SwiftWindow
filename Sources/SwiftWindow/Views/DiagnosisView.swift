@@ -51,7 +51,7 @@ struct DiagnosisView: View {
                     Label("深度泄漏扫描 (leaks)", systemImage: "ant")
                 }
             }
-            .disabled(engine.isLeakScanning)
+            .disabled(engine.isPrivilegedBusy)
             Spacer()
             if let snapshot = engine.attribution {
                 Text("扫描于 \(snapshot.date.formatted(date: .omitted, time: .standard)) · 缩放 \(String(format: "%.0fx", snapshot.displayScale))")

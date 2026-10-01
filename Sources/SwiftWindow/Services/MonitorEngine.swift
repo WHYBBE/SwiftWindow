@@ -25,6 +25,11 @@ final class MonitorEngine: ObservableObject {
 
     var pid: Int? { stats?.pid }
 
+    /// True while any administrator-authorized operation is running. All
+    /// privileged buttons must be disabled while this is true so the system
+    /// password sheet can never be triggered twice at once.
+    var isPrivilegedBusy: Bool { isLoadingDetails || isLeakScanning }
+
     /// Activity Monitor shows a task's *physical footprint*, which includes
     /// GPU/IOSurface backing stores that never appear in `ps` RSS. We reconcile
     /// the two views as: RSS (ps) + WindowServer surface estimate ≈ footprint.
@@ -155,10 +160,14 @@ final class MonitorEngine: ObservableObject {
             refreshBasic()
             return
         }
-        guard !detailLoading else { return }
+        guard !detailLoading, !leakScanning else {
+            PrivilegedRunner.log("loadDetails IGNORED (busy)")
+            return
+        }
+        PrivilegedRunner.log("loadDetails entry")
         detailLoading = true
         isLoadingDetails = true
-        statusMessage = "正在请求管理员权限并采集数据…"
+        statusMessage = "正在请求管理员权限并采集 vmmap / footprint / heap（WindowServer 体积大，约需 30–60 秒）…"
 
         Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) { () -> Result<DetailedReport, Error> in
@@ -193,6 +202,8 @@ final class MonitorEngine: ObservableObject {
             case .failure(let error):
                 if let privileged = error as? PrivilegedError, case .cancelled = privileged {
                     self.statusMessage = "已取消授权"
+                } else if let privileged = error as? PrivilegedError, case .busy = privileged {
+                    self.statusMessage = "已有一次授权正在进行，请稍候"
                 } else {
                     self.errorMessage = error.localizedDescription
                     self.statusMessage = "分析失败"
@@ -206,17 +217,17 @@ final class MonitorEngine: ObservableObject {
     /// libraries in the stack traces.
     func runLeakScan() {
         guard let pid = stats?.pid else { return }
-        guard !leakScanning else { return }
+        guard !leakScanning, !detailLoading else { return }
         leakScanning = true
         isLeakScanning = true
-        statusMessage = "正在运行 leaks 深度扫描（可能需要几十秒）…"
+        statusMessage = "正在运行 leaks 深度扫描（可能持续数分钟，期间请勿重复点击）…"
 
         Task { [weak self] in
             let result = await Task.detached(priority: .userInitiated) { () -> Result<LeaksReport, Error> in
                 do {
                     let outputs = try PrivilegedRunner.runBatch([
                         ["/usr/bin/leaks", String(pid)]
-                    ])
+                    ], timeout: 600)
                     return .success(LeaksParser.parse(outputs.first ?? ""))
                 } catch {
                     return .failure(error)
@@ -234,6 +245,8 @@ final class MonitorEngine: ObservableObject {
             case .failure(let error):
                 if let privileged = error as? PrivilegedError, case .cancelled = privileged {
                     self.statusMessage = "已取消授权"
+                } else if let privileged = error as? PrivilegedError, case .busy = privileged {
+                    self.statusMessage = "已有一次授权正在进行，请稍候"
                 } else {
                     self.errorMessage = error.localizedDescription
                     self.statusMessage = "leaks 扫描失败"
